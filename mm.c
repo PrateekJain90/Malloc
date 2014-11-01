@@ -238,7 +238,9 @@ void *mm_realloc(void *ptr, size_t size)
  * checkheap - We don't check anything right now. 
  */
 void mm_checkheap(int verbose)  
-{ 
+{
+	if(verbose)
+		printf("Verbose mm heap"); 
 }
 
 /* 
