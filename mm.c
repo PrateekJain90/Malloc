@@ -17,7 +17,7 @@
 
 /* If you want debugging output, use the following macro.  When you hand
  * in, remove the #define DEBUG line. */
-#define DEBUG
+#define DEBUGx
 #ifdef DEBUG
 # define dbg_printf(...) printf(__VA_ARGS__)
 #else
@@ -104,8 +104,10 @@ static void deleteFromFreeList(void *bp);
 /* Given a an offset, convert it to actual address */
 static inline void *actualAddressFromOffset(int offset)
 {
+	dbg_printf("Offset is : %d\n",offset);
+
 	if(offset==0)
-		return 0;
+		return NULL;
 
 	return (void *)(offset + heap_listp);
 }
@@ -113,7 +115,9 @@ static inline void *actualAddressFromOffset(int offset)
 /* Given an address, convert it to an offset */
 static inline int offsetFromActualAddress(void *bp)
 {
-	if((char*)bp==0)
+	dbg_printf("Offset from actual address called..\n");
+	
+	if(!bp)
 		return 0;
 
 	return (int)((char*)bp - heap_listp);
@@ -125,6 +129,9 @@ static inline int offsetFromActualAddress(void *bp)
  */
 int mm_init(void) {
 
+	heap_listp = 0;  /* Pointer to first block */  
+	freeListHeader = NULL;
+	
 	/* Create the initial empty heap */
 	if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) //line:vm:mm:begininit
 		return -1;
@@ -380,10 +387,11 @@ static void place(void *bp, size_t asize)
 {
 	size_t csize = GET_SIZE(HDRP(bp));   
 	deleteFromFreeList(bp);
-
+	
 	if ((csize - asize) >= (2*DSIZE)) { 
 		PUT(HDRP(bp), PACK(asize, 1));
 		PUT(FTRP(bp), PACK(asize, 1));
+
 		bp = NEXT_BLKP(bp);
 		PUT(HDRP(bp), PACK(csize-asize, 0));
 		PUT(FTRP(bp), PACK(csize-asize, 0));
@@ -426,9 +434,13 @@ static void *find_fit(size_t asize)
 	/* $begin mmfirstfit */
 	/* First fit search */
 	void *bp;
-
+	
+	dbg_printf("find fit called\n");
 	for (bp = freeListHeader; bp && GET_SIZE(HDRP(bp)) > 0; bp = actualAddressFromOffset(GET(NEXT_PTR(bp)))) {
-		if (asize <= GET_SIZE(HDRP(bp))) {
+		
+		dbg_printf("Inside Loop: bp header value is : %lx\n",(unsigned long)((unsigned long*)bp));
+		if (asize <= GET_SIZE(HDRP(bp)) && !GET_ALLOC(HDRP(bp))) {
+			dbg_printf("Requested: %zu, Gave: %d\n",asize,GET_SIZE(HDRP(bp)));
 			return bp;
 		}
 	}
@@ -466,7 +478,7 @@ static void checkblock(void *bp)
 		printf("Error: header does not match footer\n");
 	if(!in_heap(bp))
 		printf("Error: Block not within heap boundaries");
-
+/*
 	if(GET_ALLOC(HDRP(bp))==0)
 	{
 		void* prevFreeBlock = actualAddressFromOffset(GET(PREV_PTR(bp)));
@@ -487,6 +499,7 @@ static void checkblock(void *bp)
 		if(!in_heap(nextFreeBlock))
 			printf("Error: Next Free block not within heap boundaries");
 	}
+*/
 }
 
 /* 
@@ -522,6 +535,8 @@ static void deleteFromFreeList(void *bp)
 		dbg_printf("NULL received in deleteFromFreeList");
 		return;
 	}
+
+	dbg_printf("Delete called....\n");
 	
 	//CASE 1 : Delete from the beginning of free list
 	if(bp == freeListHeader)
@@ -529,7 +544,11 @@ static void deleteFromFreeList(void *bp)
 		int offsetValue = GET(NEXT_PTR(bp));
 		
 		if(0==offsetValue)
-			freeListHeader = NULL;			
+		{
+			freeListHeader = NULL;
+			PUT(NEXT_PTR(bp),0);
+			PUT(PREV_PTR(bp),0);
+		}	
 
 		else if(offsetValue)
 		{
@@ -569,6 +588,8 @@ static void deleteFromFreeList(void *bp)
 		}
 
 	}
+
+	dbg_printf("Delete exited...\n");
 }
 
 static void addToFreeList(void *bp)
@@ -578,6 +599,8 @@ static void addToFreeList(void *bp)
 		dbg_printf("NULL received in addToFreeList");
 		return;
 	}	
+
+	dbg_printf("add called..\n");
 
 	// If there is no block in free list
 	if(!freeListHeader)
@@ -592,10 +615,9 @@ static void addToFreeList(void *bp)
 	{
 		PUT(NEXT_PTR(bp),offsetFromActualAddress(freeListHeader));
 		PUT(PREV_PTR(bp),0);
-
-		void *bp_nextBlock = actualAddressFromOffset(GET(NEXT_PTR(bp)));
-		PUT(PREV_PTR(bp_nextBlock),offsetFromActualAddress(bp));
-
+		PUT(PREV_PTR(freeListHeader),offsetFromActualAddress(bp));
 		freeListHeader = bp;
 	}
+	
+	dbg_printf("add exited...\n");
 }
