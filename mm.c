@@ -75,13 +75,11 @@
 
 
 /* Given block ptr bp, find next and previous free blocks*/
-// 4 to 8 byte conversion
-
-//#define NEXT_PTR(bp)   (void *)(unsigned long)(*(unsigned int *)((char *)(bp) + WSIZE))
-//#define PREV_PTR(bp)   (void *)(unsigned long)(*(unsigned int *)((char *)(bp)))
-
 #define NEXT_PTR(bp)   ((char *)(bp) + WSIZE)
 #define PREV_PTR(bp)   ((char *)(bp))
+
+/* Find the status of allocation of the previous block */
+#define GET_ALLOC_PREV_BLOCK(bp)   (GET(HDRP(bp)) & 2) 
 
 /* Global variables */
 static char *heap_listp = 0;  /* Pointer to first block */  
@@ -129,7 +127,6 @@ static inline int offsetFromActualAddress(void *bp)
  */
 int mm_init(void) {
 
-	heap_listp = 0;  /* Pointer to first block */  
 	freeListHeader = NULL;
 	
 	/* Create the initial empty heap */
@@ -138,7 +135,7 @@ int mm_init(void) {
 	PUT(heap_listp, 0);                          /* Alignment padding */
 	PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1)); /* Prologue header */ 
 	PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1)); /* Prologue footer */ 
-	PUT(heap_listp + (3*WSIZE), PACK(0, 1));     /* Epilogue header */
+	PUT(heap_listp + (3*WSIZE), PACK(0, 3));     /* Epilogue header */
 	heap_listp += (2*WSIZE);                     //line:vm:mm:endinit  
 	/* $end mminit */
 
@@ -177,7 +174,7 @@ void *malloc (size_t size) {
 	if (size <= DSIZE)                                          //line:vm:mm:sizeadjust1
 		asize = 2*DSIZE;                                        //line:vm:mm:sizeadjust2
 	else
-		asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE); //line:vm:mm:sizeadjust3
+		asize = DSIZE * ((size + (WSIZE) + (DSIZE-1)) / DSIZE); //line:vm:mm:sizeadjust3
 
 	/* Search the free list for a fit */
 	if ((bp = find_fit(asize)) != NULL) {  //line:vm:mm:findfitcall
@@ -209,8 +206,13 @@ void free (void *bp) {
 	}
 	/* $begin mmfree */
 
-	PUT(HDRP(bp), PACK(size, 0));
-	PUT(FTRP(bp), PACK(size, 0));
+	//PUT(HDRP(bp), PACK(size, 0));
+	//PUT(FTRP(bp), PACK(size, 0));
+	
+	PUT(HDRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(bp)|0));
+	PUT(FTRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(bp)|0));
+	PUT(HDRP(NEXT_BLKP(bp)),GET(HDRP(NEXT_BLKP(bp)))&~2);
+
 	coalesce(bp);
 }
 
@@ -301,7 +303,8 @@ void mm_checkheap(int lineno) {
  */
 static void *coalesce(void *bp) 
 {
-	size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+	//size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+	size_t prev_alloc = GET_ALLOC_PREV_BLOCK(bp);
 	size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
 	size_t size = GET_SIZE(HDRP(bp));
 
@@ -315,8 +318,12 @@ static void *coalesce(void *bp)
 		deleteFromFreeList(NEXT_BLKP(bp));	
 
 		size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
-		PUT(HDRP(bp), PACK(size, 0));
-		PUT(FTRP(bp), PACK(size,0));
+		//PUT(HDRP(bp), PACK(size, 0));
+		//PUT(FTRP(bp), PACK(size,0));
+
+		PUT(HDRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(bp)|0));
+		PUT(FTRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(bp)|0));
+
 	}
 
 	else if (!prev_alloc && next_alloc) {      /* Case 3 */
@@ -324,8 +331,12 @@ static void *coalesce(void *bp)
 		deleteFromFreeList(PREV_BLKP(bp));	
 		
 		size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-		PUT(FTRP(bp), PACK(size, 0));
-		PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+		//PUT(FTRP(bp), PACK(size, 0));
+		//PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+		
+		PUT(FTRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(PREV_BLKP(bp))|0));
+		PUT(HDRP(PREV_BLKP(bp)), PACK(size, GET_ALLOC_PREV_BLOCK(PREV_BLKP(bp))|0));
+		
 		bp = PREV_BLKP(bp);
 	}
 
@@ -336,8 +347,12 @@ static void *coalesce(void *bp)
 		
 		size += GET_SIZE(HDRP(PREV_BLKP(bp))) + 
 			GET_SIZE(FTRP(NEXT_BLKP(bp)));
-		PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-		PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
+		//PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+		//PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
+		
+		PUT(HDRP(PREV_BLKP(bp)), PACK(size, GET_ALLOC_PREV_BLOCK(PREV_BLKP(bp))|0));
+		PUT(FTRP(NEXT_BLKP(bp)), PACK(size, GET_ALLOC_PREV_BLOCK(PREV_BLKP(bp))|0));
+
 		bp = PREV_BLKP(bp);
 	}
 	
@@ -367,8 +382,8 @@ static void *extend_heap(size_t words)
 		return NULL;                                        //line:vm:mm:endextend
 
 	/* Initialize free block header/footer and the epilogue header */
-	PUT(HDRP(bp), PACK(size, 0));         /* Free block header */   //line:vm:mm:freeblockhdr
-	PUT(FTRP(bp), PACK(size, 0));         /* Free block footer */   //line:vm:mm:freeblockftr
+	PUT(HDRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(bp)|0));         /* Free block header */   //line:vm:mm:freeblockhdr
+	PUT(FTRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(bp)|0));         /* Free block footer */   //line:vm:mm:freeblockftr
 	PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* New epilogue header */ //line:vm:mm:newepihdr
 
 	/* Coalesce if the previous block was free */
@@ -389,17 +404,25 @@ static void place(void *bp, size_t asize)
 	deleteFromFreeList(bp);
 	
 	if ((csize - asize) >= (2*DSIZE)) { 
-		PUT(HDRP(bp), PACK(asize, 1));
-		PUT(FTRP(bp), PACK(asize, 1));
+		//PUT(HDRP(bp), PACK(asize, 1));
+		//PUT(FTRP(bp), PACK(asize, 1));
 
+		PUT(HDRP(bp),PACK(asize, GET_ALLOC_PREV_BLOCK(bp)|1));
+		
 		bp = NEXT_BLKP(bp);
-		PUT(HDRP(bp), PACK(csize-asize, 0));
-		PUT(FTRP(bp), PACK(csize-asize, 0));
+		PUT(HDRP(bp), PACK(csize-asize, 2));
+		//PUT(FTRP(bp), PACK(csize-asize, 0));
+		PUT(FTRP(bp), PACK(csize-asize, 2));
+		
 		addToFreeList(bp);
 	}
 	else { 
-		PUT(HDRP(bp), PACK(csize, 1));
-		PUT(FTRP(bp), PACK(csize, 1));
+		//PUT(HDRP(bp), PACK(csize, 1));
+		//PUT(FTRP(bp), PACK(csize, 1));
+		
+		PUT(HDRP(bp),PACK(csize, GET_ALLOC_PREV_BLOCK(bp)|1));
+		if(NEXT_BLKP(bp))
+			PUT(HDRP(NEXT_BLKP(bp)),(GET(HDRP(NEXT_BLKP(bp)))|2));
 	}
 }
 /* $end mmplace */
