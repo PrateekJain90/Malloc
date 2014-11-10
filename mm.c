@@ -41,11 +41,6 @@
 #define ALIGN(p) (((size_t)(p) + (ALIGNMENT-1)) & ~0x7)
 
 
-/*
- * If NEXT_FIT defined use next fit search, else use first fit search 
- */
-#define NEXT_FITx
-
 /* $begin mallocmacros */
 /* Basic constants and macros */
 #define WSIZE       4       /* Word and header/footer size (bytes) */ //line:vm:mm:beginconst
@@ -81,13 +76,13 @@
 /* Find the status of allocation of the previous block */
 #define GET_ALLOC_PREV_BLOCK(bp)   (GET(HDRP(bp)) & 2) 
 
+#define FREE_LIST_ARRAY_SIZE 16
+
+
 /* Global variables */
 static char *heap_listp = 0;  /* Pointer to first block */  
-static char *freeListHeader = NULL;
+static char **freeListArray = NULL;
 
-#ifdef NEXT_FIT
-static char *rover;           /* Next fit rover */
-#endif
 /* Function prototypes for internal helper routines */
 static void *extend_heap(size_t words);
 static void place(void *bp, size_t asize);
@@ -121,17 +116,37 @@ static inline int offsetFromActualAddress(void *bp)
 	return (int)((char*)bp - heap_listp);
 }
 
+/* Given a size, calculate the index of FreeList array  */
+static inline int indexOfFreeListArray(int size)
+{
+	int index=0;
+	int maxSizeForFirstSizeClass = 1<<4;	
+	int maxSizeForLastSizeClass = (maxSizeForFirstSizeClass<<15);
+
+	for(int blockSize = maxSizeForFirstSizeClass; blockSize <= maxSizeForLastSizeClass; blockSize <<= 1)
+	{
+		if(size<=blockSize)
+			return index;		
+		index++;
+	}
+
+	return index-1;
+}
+
 
 /*
  * Initialize: return -1 on error, 0 on success.
  */
 int mm_init(void) {
 
-	freeListHeader = NULL;
-	
 	/* Create the initial empty heap */
-	if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) //line:vm:mm:begininit
+	if ((heap_listp = mem_sbrk((FREE_LIST_ARRAY_SIZE*DSIZE) + 4*WSIZE)) == (void *)-1) //line:vm:mm:begininit
 		return -1;
+
+	freeListArray = (char **)heap_listp;
+	memset(freeListArray, 0, (FREE_LIST_ARRAY_SIZE*DSIZE));
+	heap_listp += (FREE_LIST_ARRAY_SIZE*DSIZE);
+	
 	PUT(heap_listp, 0);                          /* Alignment padding */
 	PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1)); /* Prologue header */ 
 	PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1)); /* Prologue footer */ 
@@ -139,9 +154,6 @@ int mm_init(void) {
 	heap_listp += (2*WSIZE);                     //line:vm:mm:endinit  
 	/* $end mminit */
 
-#ifdef NEXT_FIT
-	rover = heap_listp;
-#endif
 	/* $begin mminit */
 
 	/* Extend the empty heap with a free block of CHUNKSIZE bytes */
@@ -206,9 +218,6 @@ void free (void *bp) {
 	}
 	/* $begin mmfree */
 
-	//PUT(HDRP(bp), PACK(size, 0));
-	//PUT(FTRP(bp), PACK(size, 0));
-	
 	PUT(HDRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(bp)|0));
 	PUT(FTRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(bp)|0));
 	PUT(HDRP(NEXT_BLKP(bp)),GET(HDRP(NEXT_BLKP(bp)))&~2);
@@ -318,8 +327,6 @@ static void *coalesce(void *bp)
 		deleteFromFreeList(NEXT_BLKP(bp));	
 
 		size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
-		//PUT(HDRP(bp), PACK(size, 0));
-		//PUT(FTRP(bp), PACK(size,0));
 
 		PUT(HDRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(bp)|0));
 		PUT(FTRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(bp)|0));
@@ -331,8 +338,6 @@ static void *coalesce(void *bp)
 		deleteFromFreeList(PREV_BLKP(bp));	
 		
 		size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-		//PUT(FTRP(bp), PACK(size, 0));
-		//PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
 		
 		PUT(FTRP(bp), PACK(size, GET_ALLOC_PREV_BLOCK(PREV_BLKP(bp))|0));
 		PUT(HDRP(PREV_BLKP(bp)), PACK(size, GET_ALLOC_PREV_BLOCK(PREV_BLKP(bp))|0));
@@ -347,8 +352,6 @@ static void *coalesce(void *bp)
 		
 		size += GET_SIZE(HDRP(PREV_BLKP(bp))) + 
 			GET_SIZE(FTRP(NEXT_BLKP(bp)));
-		//PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-		//PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
 		
 		PUT(HDRP(PREV_BLKP(bp)), PACK(size, GET_ALLOC_PREV_BLOCK(PREV_BLKP(bp))|0));
 		PUT(FTRP(NEXT_BLKP(bp)), PACK(size, GET_ALLOC_PREV_BLOCK(PREV_BLKP(bp))|0));
@@ -358,12 +361,6 @@ static void *coalesce(void *bp)
 	
 	addToFreeList(bp);
 	
-#ifdef NEXT_FIT
-	/* Make sure the rover isn't pointing into the free block */
-	/* that we just coalesced */
-	if ((rover > (char *)bp) && (rover < NEXT_BLKP(bp))) 
-		rover = bp;
-#endif
 	return bp;
 }
 
@@ -404,21 +401,16 @@ static void place(void *bp, size_t asize)
 	deleteFromFreeList(bp);
 	
 	if ((csize - asize) >= (2*DSIZE)) { 
-		//PUT(HDRP(bp), PACK(asize, 1));
-		//PUT(FTRP(bp), PACK(asize, 1));
 
 		PUT(HDRP(bp),PACK(asize, GET_ALLOC_PREV_BLOCK(bp)|1));
 		
 		bp = NEXT_BLKP(bp);
 		PUT(HDRP(bp), PACK(csize-asize, 2));
-		//PUT(FTRP(bp), PACK(csize-asize, 0));
 		PUT(FTRP(bp), PACK(csize-asize, 2));
 		
 		addToFreeList(bp);
 	}
 	else { 
-		//PUT(HDRP(bp), PACK(csize, 1));
-		//PUT(FTRP(bp), PACK(csize, 1));
 		
 		PUT(HDRP(bp),PACK(csize, GET_ALLOC_PREV_BLOCK(bp)|1));
 		if(NEXT_BLKP(bp))
@@ -434,42 +426,22 @@ static void place(void *bp, size_t asize)
 /* $begin mmfirstfit */
 /* $begin mmfirstfit-proto */
 static void *find_fit(size_t asize)
-	/* $end mmfirstfit-proto */
 {
-	/* $end mmfirstfit */
-
-#ifdef NEXT_FIT 
-	/* Next fit search */
-	char *oldrover = rover;
-
-	/* Search from the rover to the end of list */
-	for ( ; GET_SIZE(HDRP(rover)) > 0; rover = NEXT_BLKP(rover))
-		if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
-			return rover;
-
-	/* search from start of list to old rover */
-	for (rover = heap_listp; rover < oldrover; rover = NEXT_BLKP(rover))
-		if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
-			return rover;
-
-	return NULL;  /* no fit found */
-#else 
-	/* $begin mmfirstfit */
-	/* First fit search */
 	void *bp;
-	
-	dbg_printf("find fit called\n");
-	for (bp = freeListHeader; bp && GET_SIZE(HDRP(bp)) > 0; bp = actualAddressFromOffset(GET(NEXT_PTR(bp)))) {
-		
-		dbg_printf("Inside Loop: bp header value is : %lx\n",(unsigned long)((unsigned long*)bp));
-		if (asize <= GET_SIZE(HDRP(bp)) && !GET_ALLOC(HDRP(bp))) {
-			dbg_printf("Requested: %zu, Gave: %d\n",asize,GET_SIZE(HDRP(bp)));
-			return bp;
-		}
+	int index = indexOfFreeListArray(asize);
+
+	while(index < FREE_LIST_ARRAY_SIZE)
+	{
+		for (bp = freeListArray[index]; bp && GET_SIZE(HDRP(bp)) > 0; 
+			bp = actualAddressFromOffset(GET(NEXT_PTR(bp)))){
+				if (asize <= GET_SIZE(HDRP(bp)) && !GET_ALLOC(HDRP(bp))){
+					return bp;
+				}
+			}
+		index ++;
 	}
+	
 	return NULL; /* No fit */
-	/* $end mmfirstfit */
-#endif
 }
 
 static void printblock(void *bp) 
@@ -553,22 +525,16 @@ void checkheap(int verbose)
 
 static void deleteFromFreeList(void *bp)
 {
-	if(!bp)
-	{
-		dbg_printf("NULL received in deleteFromFreeList");
-		return;
-	}
-
-	dbg_printf("Delete called....\n");
+	int index = indexOfFreeListArray(GET_SIZE(HDRP(bp)));
 	
 	//CASE 1 : Delete from the beginning of free list
-	if(bp == freeListHeader)
+	if(bp == freeListArray[index])
 	{
 		int offsetValue = GET(NEXT_PTR(bp));
 		
 		if(0==offsetValue)
 		{
-			freeListHeader = NULL;
+			freeListArray[index] = NULL;
 			PUT(NEXT_PTR(bp),0);
 			PUT(PREV_PTR(bp),0);
 		}	
@@ -576,7 +542,7 @@ static void deleteFromFreeList(void *bp)
 		else if(offsetValue)
 		{
 			void *bp_nextBlock = actualAddressFromOffset(offsetValue);
-			freeListHeader = bp_nextBlock;
+			freeListArray[index] = bp_nextBlock;
 			PUT(PREV_PTR(bp_nextBlock),0);
 			PUT(NEXT_PTR(bp),0);
 		}
@@ -611,36 +577,23 @@ static void deleteFromFreeList(void *bp)
 		}
 
 	}
-
-	dbg_printf("Delete exited...\n");
 }
 
 static void addToFreeList(void *bp)
 {
-	if(!bp)
-	{
-		dbg_printf("NULL received in addToFreeList");
-		return;
-	}	
-
-	dbg_printf("add called..\n");
-
+	int index = indexOfFreeListArray(GET_SIZE(HDRP(bp)));
+	
 	// If there is no block in free list
-	if(!freeListHeader)
-	{
-		freeListHeader = bp;
-		PUT(PREV_PTR(bp),0);
+	if(!freeListArray[index])
 		PUT(NEXT_PTR(bp),0);
-	}
 
 	// Put block in the beginning of the free list
 	else
 	{
-		PUT(NEXT_PTR(bp),offsetFromActualAddress(freeListHeader));
-		PUT(PREV_PTR(bp),0);
-		PUT(PREV_PTR(freeListHeader),offsetFromActualAddress(bp));
-		freeListHeader = bp;
+		PUT(NEXT_PTR(bp),offsetFromActualAddress(freeListArray[index]));
+		PUT(PREV_PTR(freeListArray[index]),offsetFromActualAddress(bp));
 	}
 	
-	dbg_printf("add exited...\n");
+	freeListArray[index] = bp;
+	PUT(PREV_PTR(bp),0);
 }
